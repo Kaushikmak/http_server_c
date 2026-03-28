@@ -1,11 +1,13 @@
 #include "proxy_parse.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include <time.h>
 #include <pthread.h>
 #include <semaphore.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 
 // globals
 #define MAX_CLIENTS 10
@@ -49,7 +51,7 @@ void *thread_fn(void *socketNEW);
 void *thread_fn(void *socketNew){
     sem_wait(&semaphore);
     int p;
-    sem_getvalue(&semaphore, p);
+    sem_getvalue(&semaphore, &p);
     printf("semaphore value: %d\n",p);
 
     int *t = (int *) socketNew;
@@ -71,9 +73,62 @@ void *thread_fn(void *socketNew){
         }
     }
 
-    char *temp = (char *)malloc(strlen(buffer)*sizeof(char)+1);
-     
+    char *tempReq = (char *)malloc(strlen(buffer)*sizeof(char)+1);
+    for(int i=0; i<strlen(buffer); i++){
+        tempReq[i] = buffer[i];
+    }
 
+    cache *temp = find(tempReq);
+    // if already in cache
+    if(temp != NULL){
+        int size = temp->len/sizeof(char);
+        int pos = 0;
+        char response[MAX_BYTES];
+
+        while(pos<size){
+            bzero(response, MAX_BYTES);
+            for(int i=0; i<MAX_BYTES; i++){
+                response[i] = temp->data[i];
+                pos++;
+            }
+            send(socket, response, MAX_BYTES, 0);
+        }
+        printf("Data retrived from the cache\n");
+        printf("%s\n\n", response);
+    }else if(byteSendClient > 0){
+        len = strlen(buffer);
+        struct ParsedRequest *request = ParsedRequest_create();
+        if(ParsedRequest_parse(request, buffer, len) < 0){
+            printf("Parsing failed");
+        }else{
+            bzero(buffer, MAX_BYTES);
+            if(!strcmp(request->method, "GET")){
+                if(request->host && request->path && checkHTTPVersion(request->version)==1){
+                    byteSendClient = handle_request(socket, request, tempReq);
+                    if(byteSendClient == -1){
+                        sendErrorMessage(socket, 500 );
+                    }
+                }else{
+                    sendErrorMessage(socket,500);
+                }
+            }else{
+                printf("Currently PROXY SERVER only SUPPORT GET method\n");
+            }
+        }
+        ParsedRequest_destroy(request);
+    }else if(byteSendClient == 0){
+        printf("Client is disconnected");
+    }
+
+    shutdown(socket, SHUT_RDWR);
+
+    close(socket);
+    free(buffer);
+    sem_post(&semaphore);
+    sem_getvalue(&semaphore, p);
+    printf("Semaphore POST value is %d:\n",p);
+    free(tempReq);
+    return NULL;
 }
 
 int main(int argc,char *argv[]){
@@ -86,7 +141,7 @@ int main(int argc,char *argv[]){
     pthread_mutex_init(&lock, NULL);
 
     // first argument is portnumber
-    if(argv == 2){
+    if(argc == 2){
         PORT = atoi(argv[1]);
     }else{
         printf("Too few arguments");
@@ -103,7 +158,7 @@ int main(int argc,char *argv[]){
     }
 
     int reuse = 1;
-    if(setsockopt(socketID, SOL_SOCKET, SO_REUSEADDR, (const char*)&reuse, sizeof(reuse) < 0)){
+    if(setsockopt(socketID, SOL_SOCKET, SO_REUSEADDR, (const char*)&reuse, sizeof(reuse)) < 0){
         perror("setsockopt failed to reuse socket");
     }
 
@@ -112,7 +167,7 @@ int main(int argc,char *argv[]){
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(PORT);
     server_addr.sin_addr.s_addr = INADDR_ANY;
-    if(bind(socketID, (struct sockaddr*)&server_addr, sizeof(server_addr) < 0 )){
+    if(bind(socketID, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0){
         perror("PORT is not available");
         exit(1);
     }
@@ -120,7 +175,7 @@ int main(int argc,char *argv[]){
     printf("Binding on port: %d\n",PORT);
 
     int listenStatus = listen(socketID, MAX_CLIENTS);
-    if(listen<0){
+    if(listenStatus<0){
         perror("Error in listening");
         exit(1);
     }
@@ -129,12 +184,12 @@ int main(int argc,char *argv[]){
     int connectedSocketID[MAX_CLIENTS];
 
     while(1){
-        bzero((char*)&client_addr, size(client_addr));
+        bzero((char*)&client_addr, sizeof(client_addr));
         clientLen = sizeof(client_addr);
         clientSocketID = accept(socketID, (struct sockaddr_in*)&client_addr, (socklen_t*)&clientLen);
         if(clientSocketID<0){
             perror("Not able to connect to client");
-            ewit(1);
+            exit(1);
         }else{
             connectedSocketID[i] = clientSocketID;
         }
