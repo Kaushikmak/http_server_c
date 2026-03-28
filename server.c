@@ -9,6 +9,7 @@
 
 // globals
 #define MAX_CLIENTS 10
+#define MAX_BYTES   4096
 
 typedef struct cache cache;
 
@@ -41,6 +42,39 @@ cache* find(char *url);
 int addCache(char *data, size_t size, char *url);
 // to remove element if cache overflow
 void removeCache();
+// thread function
+void *thread_fn(void *socketNEW);
+
+
+void *thread_fn(void *socketNew){
+    sem_wait(&semaphore);
+    int p;
+    sem_getvalue(&semaphore, p);
+    printf("semaphore value: %d\n",p);
+
+    int *t = (int *) socketNew;
+    int socket = *t;
+    int byteSendClient, len;
+
+    char *buffer = (char *)calloc(MAX_BYTES, sizeof(char));
+
+    bzero(buffer, MAX_BYTES);
+
+    byteSendClient = recv(socket, buffer, MAX_BYTES, 0);
+
+    while(byteSendClient > 0){
+        len = strlen(buffer);
+        if(strstr(buffer, "\r\n\r\n") == NULL){
+            byteSendClient = recv(socket, buffer + len, MAX_BYTES, 0);
+        }else{
+            break;
+        }
+    }
+
+    char *temp = (char *)malloc(strlen(buffer)*sizeof(char)+1);
+     
+
+}
 
 int main(int argc,char *argv[]){
     int clientSocketID;
@@ -110,9 +144,13 @@ int main(int argc,char *argv[]){
         char str[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &ip_addr, str, INET_ADDRSTRLEN); 
 
-        
+        printf("Client is conneted to PORT:%d with IP:%s\n", ntohs(client_addr.sin_port), ip_addr);
 
+        pthread_create(&threadID[i], NULL, thread_fn, (void *)&connectedSocketID[i]);
 
+        i++;
     }
+    close(socketID);
 
+    return 0;
 }
