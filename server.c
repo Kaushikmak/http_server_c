@@ -11,8 +11,10 @@
 #include <netdb.h>
 
 // globals
-#define MAX_CLIENTS 10
-#define MAX_BYTES   4096
+#define MAX_CLIENTS         10
+#define MAX_BYTES           4096
+#define MAX_ELEMENT_SIZE    10*(1<<10)
+#define MAX_SIZE            200*(1<<20)
 
 typedef struct cache cache;
 
@@ -79,6 +81,39 @@ cache *find(char *url){
     temp_lock_val = pthread_mutex_unlock(&lock);
     printf("lock is unlocked");
     return site;
+}
+
+int addCache(char *data, size_t size, char *url){
+    int temp_lock_val = pthread_mutex_lock(&lock);
+    printf("Add cache lock acquired %d\n",temp_lock_val);
+
+    int elementSize = size+1+strlen(url)+sizeof(cache);
+    if(elementSize > MAX_ELEMENT_SIZE){
+        temp_lock_val = pthread_mutex_unlock(&lock);
+        printf("Add cache lock is unlocked\n");
+        return 0;
+    }else{
+        while (cacheSize+elementSize > MAX_SIZE ){   
+            removeCache();
+        }
+
+        cache *element = (cache*)malloc(sizeof(cache));
+        
+        element->data = (char*)malloc(size+1);
+        strcpy(element->data, data);
+        element->url = (char*)malloc(1+(strlen(url)*sizeof(char)));
+        strcpy(element->url, url);
+
+        element->time = time(NULL);
+        element->next = head;
+        element->len = size;
+        head = element;
+        cacheSize += elementSize;
+        temp_lock_val = pthread_mutex_unlock(&lock);
+        printf("Add cache lock is unloacked");
+        return 1;
+    }
+    return 0;
 }
 
 int connectRemoteServer(char *hostaddr, int portNumber){
