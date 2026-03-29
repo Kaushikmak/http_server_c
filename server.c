@@ -105,6 +105,42 @@ int handle_request(int clientSocketID, struct ParsedRequest *request, char *temp
 
     int remoteSocketID = connectRemoteServer(request->host, server_port);
 
+    if(remoteSocketID < 0){
+        return -1;
+    }
+
+    int byteSend = send(remoteSocketID, buffer, strlen(buffer), 0);
+    bzero(buffer, MAX_BYTES);
+
+    byteSend = recv(remoteSocketID, buffer, MAX_BYTES-1, 0);
+    char *tempBuffer = (char*)malloc(MAX_BYTES*sizeof(char));
+
+    int tempBufSize = MAX_BYTES;
+
+    int tempBufferIDX = 0;
+    while(byteSend > 0 ){
+        byteSend = send(clientSocketID, buffer, byteSend, 0);
+        for(int i=0; i<byteSend/sizeof(char); i++){
+            tempBuffer[tempBufferIDX] = buffer[i];
+            tempBufferIDX++; 
+        }
+        tempBufSize += MAX_BYTES;
+        tempBuffer = (char*)realloc(tempBuffer, tempBufSize);
+        if( byteSend < 0 ){
+            perror("Error in sending data to client\n");
+            break;
+        }
+        bzero(buffer, MAX_BYTES);
+        byteSend = recv(remoteSocketID, buffer, MAX_BYTES-1, 0);
+    }
+    tempBuffer[tempBufferIDX] = '\0';
+
+    free(buffer);
+    addCache(tempBuffer, strlen(tempBuffer), tempReq);
+    free(tempBuffer);
+    close(remoteSocketID);
+
+    return 0;
 }
 
 void *thread_fn(void *socketNew){
