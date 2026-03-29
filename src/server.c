@@ -19,6 +19,7 @@
 #define MAX_BYTES           4096
 #define MAX_ELEMENT_SIZE    10*(1<<10)
 #define MAX_SIZE            200*(1<<20)
+#define HASH_SIZE           1024
 
 typedef struct cache cache;
 
@@ -42,8 +43,15 @@ struct cache{
     size_t len;
     char* url;
     time_t time;
-    cache* next;
+    cache *next;
+    cache *prev;
+    cache *hash_next;
 };
+
+cache *head = NULL;
+cache *tail = NULL;
+cache *hash_table[HASH_SIZE] = {NULL};
+size_t cacheSize = 0;
 
 // to find url in cahce
 cache* find(char *url);
@@ -64,132 +72,147 @@ int handle_request(int clientSocketID, struct ParsedRequest *request, char *temp
 //
 int handle_connect_tunnel(int clientSocket, int remoteSocket);
 
-cache *find(char *url){
-    cache *site = NULL;
+// djb2 hash function for strings
+unsigned int hash_url(const char *url) {
+    unsigned long hash = 5381;
+    int c;
+    while ((c = *url++)) {
+        hash = ((hash << 5) + hash) + c;
+    }
+    return hash % HASH_SIZE;
+}
 
+void move_to_head(cache *node) {
+    if (node == head) return;
+
+    if (node->prev) node->prev->next = node->next;
+    if (node->next) node->next->prev = node->prev;
+    
+    if (node == tail) tail = node->prev;
+
+    node->next = head;
+    node->prev = NULL;
+    if (head) head->prev = node;
+    head = node;
+    
+    if (tail == NULL) tail = head;
+}
+
+cache *find(char *url){
     int temp_lock_val = pthread_mutex_lock(&lock);
     log_msg(LOG_DEBUG, "Cache lock acquired in find()");
 
-    if(head!=NULL){
-        site = head;
-        while(site != NULL){
-            if(!strcmp(site->url, url)){
-                char msg[128];
+    unsigned int hash_idx = hash_url(url);
+    cache *site = hash_table[hash_idx];
 
-                snprintf(msg, sizeof(msg), "Cache HIT for URL: %s", url);
-                log_msg(LOG_INFO, msg);
-
-                snprintf(msg, sizeof(msg), "LRU time before: %ld", site->time);
-                log_msg(LOG_DEBUG, msg);
-
-                site->time = time(NULL);
-
-                snprintf(msg, sizeof(msg), "LRU time updated: %ld", site->time);
-                log_msg(LOG_DEBUG, msg);
-
-                break;
-            }
-            site = site->next;
-        }
-        if(site == NULL){
+    while (site != NULL) {
+        if (!strcmp(site->url, url)) {
             char msg[128];
-            snprintf(msg, sizeof(msg), "Cache MISS for URL: %s", url);
+            snprintf(msg, sizeof(msg), "Cache HIT for URL: %s", url);
             log_msg(LOG_INFO, msg);
+
+            site->time = time(NULL);
+            move_to_head(site);
+
+            pthread_mutex_unlock(&lock);
+            return site;
         }
-    }else{
-        log_msg(LOG_INFO, "Cache is empty");
+        site = site->hash_next;
     }
 
-    temp_lock_val = pthread_mutex_unlock(&lock);
-    log_msg(LOG_DEBUG, "Cache lock released in find()");
+    char msg[128];
+    snprintf(msg, sizeof(msg), "Cache MISS for URL: %s", url);
+    log_msg(LOG_INFO, msg);
 
-    return site;
+    pthread_mutex_unlock(&lock);
+    return NULL;
 }
 
 int addCache(char *data, size_t size, char *url){
     int temp_lock_val = pthread_mutex_lock(&lock);
     log_msg(LOG_DEBUG, "Cache lock acquired in addCache()");
 
-    int elementSize = size+1+strlen(url)+sizeof(cache);
+    int elementSize = size + 1 + strlen(url) + sizeof(cache);
 
-    if(elementSize > MAX_ELEMENT_SIZE){
+    if (elementSize > MAX_ELEMENT_SIZE) {
         log_msg(LOG_ERROR, "Cache element too large, skipping insert");
-
-        temp_lock_val = pthread_mutex_unlock(&lock);
-        log_msg(LOG_DEBUG, "Cache lock released in addCache()");
+        pthread_mutex_unlock(&lock);
         return 0;
-    }else{
-        while (cacheSize+elementSize > MAX_SIZE ){   
-            log_msg(LOG_DEBUG, "Cache overflow, triggering eviction");
-            removeCache();
-        }
-
-        cache *element = (cache*)malloc(sizeof(cache));
-        
-        element->data = (char*)malloc(size+1);
-        strcpy(element->data, data);
-
-        element->url = (char*)malloc(1+(strlen(url)*sizeof(char)));
-        strcpy(element->url, url);
-
-        element->time = time(NULL);
-        element->next = head;
-        element->len = size;
-
-        head = element;
-        cacheSize += elementSize;
-
-        char msg[128];
-        snprintf(msg, sizeof(msg), "Cache INSERT: URL=%s SIZE=%zu", url, size);
-        log_msg(LOG_INFO, msg);
-
-        temp_lock_val = pthread_mutex_unlock(&lock);
-        log_msg(LOG_DEBUG, "Cache lock released in addCache()");
-
-        return 1;
     }
-    return 0;
+
+    while (cacheSize + elementSize > MAX_SIZE) {   
+        log_msg(LOG_DEBUG, "Cache overflow, triggering eviction");
+        removeCache();
+    }
+
+    cache *element = (cache*)malloc(sizeof(cache));
+    
+    element->data = (char*)malloc(size + 1);
+    strcpy(element->data, data);
+
+    element->url = (char*)malloc(1 + (strlen(url) * sizeof(char)));
+    strcpy(element->url, url);
+
+    element->time = time(NULL);
+    element->len = size;
+    
+
+    element->prev = NULL;
+    element->next = NULL;
+    unsigned int hash_idx = hash_url(url);
+    element->hash_next = hash_table[hash_idx];
+    hash_table[hash_idx] = element;
+
+    move_to_head(element);
+    cacheSize += elementSize;
+
+    char msg[128];
+    snprintf(msg, sizeof(msg), "Cache INSERT: URL=%s SIZE=%zu", url, size);
+    log_msg(LOG_INFO, msg);
+
+    pthread_mutex_unlock(&lock);
+    return 1;
 }
 
 void removeCache(){
-    cache *prev;
-    cache *nxt;
-    cache *temp;
+    cache *temp = tail;
 
-    int temp_lock_val = pthread_mutex_lock(&lock);
-    log_msg(LOG_DEBUG, "Cache lock acquired in removeCache()");
-
-    if(head!=NULL){
-        for(prev=head, nxt=head, temp=head; nxt->next!=NULL; nxt = nxt->next){
-            if(((nxt->next)->time) < (temp->time)){
-                temp = nxt->next;
-                prev = nxt;
-            }
-        }
-
-        char msg[128];
-        snprintf(msg, sizeof(msg), "Evicting cache entry URL=%s", temp->url);
-        log_msg(LOG_INFO, msg);
-
-        if(temp == head){
-            head = head->next;
-        }else{
-            prev->next = temp->next;
-        }
-
-        cacheSize = cacheSize - (temp->len) - sizeof(cache) - strlen(temp->url) - 1;
-
-        free(temp->data);
-        free(temp->url);
-        free(temp);
-
-        log_msg(LOG_DEBUG, "Cache eviction completed");
-    }else{
+    if (temp == NULL) {
         log_msg(LOG_DEBUG, "removeCache() called but cache is empty");
+        return;
     }
 
-    temp_lock_val = pthread_mutex_unlock(&lock);
-    log_msg(LOG_DEBUG, "Cache lock released in removeCache()");
+    char msg[128];
+    snprintf(msg, sizeof(msg), "Evicting cache entry URL=%s", temp->url);
+    log_msg(LOG_INFO, msg);
+
+    if (temp->prev) temp->prev->next = NULL;
+    tail = temp->prev;
+    if (head == temp) head = NULL;
+
+    unsigned int hash_idx = hash_url(temp->url);
+    cache *curr = hash_table[hash_idx];
+    cache *prev = NULL;
+
+    while (curr != NULL) {
+        if (curr == temp) {
+            if (prev) {
+                prev->hash_next = curr->hash_next;
+            } else {
+                hash_table[hash_idx] = curr->hash_next;
+            }
+            break;
+        }
+        prev = curr;
+        curr = curr->hash_next;
+    }
+
+    cacheSize = cacheSize - (temp->len) - sizeof(cache) - strlen(temp->url) - 1;
+    free(temp->data);
+    free(temp->url);
+    free(temp);
+
+    log_msg(LOG_DEBUG, "Cache eviction completed (O(1))");
 }
 
 int connectRemoteServer(char *hostaddr, int portNumber){
