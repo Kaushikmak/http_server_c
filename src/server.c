@@ -10,6 +10,7 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <unistd.h>
+#include <sys/select.h>
 // custom logger
 #include "logger.h"
 
@@ -60,6 +61,8 @@ int sendErrorMessage(int socket, int statusCode);
 int connectRemoteServer(char *hostaddr, int portNumber);
 // function to handle all requests
 int handle_request(int clientSocketID, struct ParsedRequest *request, char *tempReq, const char *method);
+//
+int handle_connect_tunnel(int clientSocket, int remoteSocket);
 
 cache *find(char *url){
     cache *site = NULL;
@@ -232,6 +235,53 @@ int connectRemoteServer(char *hostaddr, int portNumber){
     return remoteSocket;
 }
 
+int handle_connect_tunnel(int clientSocket, int remoteSocket){
+    fd_set read_fds;
+    int max_fd = (clientSocket > remoteSocket) ? clientSocket : remoteSocket;
+    char buffer[MAX_BYTES];
+    int bytes_read;
+
+    log_msg(LOG_INFO, "HTTPS CONNECT tunnel established. Starting blind relay.");
+
+    while (1) {
+        FD_ZERO(&read_fds);
+        FD_SET(clientSocket, &read_fds);
+        FD_SET(remoteSocket, &read_fds);
+
+
+        if (select(max_fd + 1, &read_fds, NULL, NULL, NULL) < 0) {
+            log_msg(LOG_ERROR, "select() failed during CONNECT tunnel");
+            break;
+        }
+
+        if (FD_ISSET(clientSocket, &read_fds)) {
+            bytes_read = recv(clientSocket, buffer, MAX_BYTES, 0);
+            if (bytes_read <= 0) {
+                log_msg(LOG_DEBUG, "Client closed connection in tunnel");
+                break; 
+            }
+            if (send(remoteSocket, buffer, bytes_read, 0) <= 0) {
+                log_msg(LOG_ERROR, "Failed to send data to remote server in tunnel");
+                break;
+            }
+        }
+
+        if (FD_ISSET(remoteSocket, &read_fds)) {
+            bytes_read = recv(remoteSocket, buffer, MAX_BYTES, 0);
+            if (bytes_read <= 0) {
+                log_msg(LOG_DEBUG, "Remote server closed connection in tunnel");
+                break; 
+            }
+            if (send(clientSocket, buffer, bytes_read, 0) <= 0) {
+                log_msg(LOG_ERROR, "Failed to send data to client in tunnel");
+                break;
+            }
+        }
+    }
+
+    log_msg(LOG_INFO, "HTTPS CONNECT tunnel closed.");
+    return 0;
+}
 
 int handle_request(int clientSocketID, struct ParsedRequest *request, char *tempReq, const char *method){
 
@@ -498,8 +548,49 @@ void *thread_fn(void *socketNew){
     log_msg(LOG_DEBUG, "Full HTTP request received");
 
     char original_method[16] = {0};
-    sscanf(buffer, "%15s", original_method);
+    char target_url[1024] = {0};
+    char http_version[16] = {0};
+    
+
+    sscanf(buffer, "%15s %1023s %15s", original_method, target_url, http_version);
     size_t method_len = strlen(original_method);
+
+
+    if (strcmp(original_method, "CONNECT") == 0) {
+        log_msg(LOG_INFO, "CONNECT method detected. Initiating tunnel setup.");
+        
+        char *host = target_url;
+        int port = 443;
+        
+
+        char *colon = strchr(target_url, ':');
+        if (colon != NULL) {
+            *colon = '\0';
+            port = atoi(colon + 1);
+        }
+
+        int remoteSocketID = connectRemoteServer(host, port);
+        if (remoteSocketID < 0) {
+             log_msg(LOG_ERROR, "Failed to connect to remote server for CONNECT tunnel");
+             sendErrorMessage(socket, 502); // Bad Gateway
+        } else {
+
+             const char *reply = "HTTP/1.1 200 Connection Established\r\n\r\n";
+             send(socket, reply, strlen(reply), 0);
+             
+
+             handle_connect_tunnel(socket, remoteSocketID);
+             
+             close(remoteSocketID);
+        }
+        
+
+        shutdown(socket, SHUT_RDWR);
+        close(socket);
+        free(buffer);
+        sem_post(&semaphore);
+        return NULL;
+    }
 
     if (strcmp(original_method, "GET") != 0) {
         if (method_len >= 3) {
