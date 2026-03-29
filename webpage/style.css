@@ -1,0 +1,242 @@
+:root {
+    --bg-color: #0d1117;
+    --text-color: #c9d1d9;
+    --accent-color: #58a6ff;
+    --success-color: #2ea043;
+    --card-bg: rgba(22, 27, 34, 0.85); /* Transparent for canvas blend */
+    --border-color: #30363d;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+body {
+    background-color: var(--bg-color);
+    color: var(--text-color);
+    line-height: 1.6;
+    overflow-x: hidden;
+}
+
+/* Background Canvas */
+#bgCanvas {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    z-index: -1;
+    opacity: 0.15; /* Subtly blends with background */
+    pointer-events: none; 
+}
+
+/* Hero Section */
+.hero {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    position: relative;
+    padding: 2rem;
+}
+
+.hero-content {
+    background: rgba(13, 17, 23, 0.7);
+    padding: 3rem;
+    border-radius: 12px;
+    backdrop-filter: blur(8px);
+    border: 1px solid var(--border-color);
+    width: 100%;
+    max-width: 800px;
+}
+
+.hero-content h1 {
+    font-size: 3.5rem;
+    color: #ffffff;
+    margin-bottom: 1rem;
+}
+
+.hero-content p {
+    font-size: 1.2rem;
+    color: #8b949e;
+    margin-bottom: 2rem;
+}
+
+/* Buttons */
+.cta-buttons {
+    display: flex;
+    gap: 1rem;
+    justify-content: center;
+}
+
+.btn {
+    padding: 0.8rem 2rem;
+    text-decoration: none;
+    border-radius: 6px;
+    font-weight: 600;
+    transition: all 0.3s ease;
+}
+
+.btn.primary {
+    background-color: var(--accent-color);
+    color: #000;
+}
+
+.btn.primary:hover {
+    background-color: #3182ce;
+    transform: translateY(-2px);
+}
+
+.btn.secondary {
+    background-color: transparent;
+    color: var(--text-color);
+    border: 1px solid var(--border-color);
+}
+
+.btn.secondary:hover {
+    border-color: var(--accent-color);
+    color: var(--accent-color);
+}
+
+/* Game Container */
+.game-wrapper {
+    margin-top: 3rem;
+    background: #000000;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    max-width: 600px;
+    margin-left: auto;
+    margin-right: auto;
+}
+
+.game-header {
+    background: #161b22;
+    padding: 0.6rem 1rem;
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 0.9rem;
+    display: flex;
+    justify-content: space-between;
+    border-bottom: 1px solid var(--border-color);
+    color: #8b949e;
+}
+
+.game-header .highlight {
+    color: var(--success-color);
+    font-weight: bold;
+}
+
+#gameCanvas {
+    display: block;
+    width: 100%;
+    cursor: crosshair;
+}
+
+.game-instructions {
+    background: #161b22;
+    font-size: 0.8rem;
+    color: #8b949e;
+    padding: 0.4rem;
+    border-top: 1px solid var(--border-color);
+}
+
+/* Features Section */
+.features-section {
+    padding: 6rem 2rem;
+    max-width: 1000px;
+    margin: 0 auto;
+    background: var(--bg-color);
+    position: relative;
+    z-index: 1;
+}
+
+.section-title {
+    text-align: center;
+    font-size: 2.5rem;
+    margin-bottom: 3rem;
+    color: #ffffff;
+}
+
+.feature-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 2rem;
+}
+
+.feature-card {
+    background-color: var(--card-bg);
+    border: 1px solid var(--border-color);
+    padding: 2rem;
+    border-radius: 8px;
+    transition: transform 0.3s ease, border-color 0.3s ease;
+}
+
+.feature-card:hover {
+    transform: translateY(-5px);
+    border-color: var(--accent-color);
+}
+
+.feature-card h3 {
+    color: var(--accent-color);
+    margin-bottom: 1rem;
+}
+
+/* Cache Details Section */
+.cache-details {
+    background-color: var(--card-bg);
+    border: 1px solid var(--border-color);
+    padding: 2.5rem;
+    border-radius: 8px;
+}
+
+.cache-list {
+    margin: 1.5rem 0 2rem 2rem;
+}
+
+.cache-list li {
+    margin-bottom: 0.8rem;
+}
+
+.stats-box {
+    display: flex;
+    justify-content: space-around;
+    background: rgba(0,0,0,0.3);
+    padding: 1.5rem;
+    border-radius: 8px;
+    border: 1px solid #21262d;
+}
+
+.stat h4 {
+    color: #8b949e;
+    margin-bottom: 0.5rem;
+}
+
+.stat span {
+    font-size: 1.5rem;
+    font-weight: bold;
+}
+
+.stat .highlight {
+    color: var(--success-color);
+}
+
+footer {
+    text-align: center;
+    padding: 2rem;
+    background: var(--bg-color);
+    border-top: 1px solid var(--border-color);
+    color: #8b949e;
+    position: relative;
+    z-index: 1;
+}
+
+/* Animations */
+.fade-in { opacity: 0; transition: opacity 1s ease-in-out; }
+.fade-in.visible { opacity: 1; }
+.slide-up { opacity: 0; transform: translateY(50px); transition: opacity 0.8s ease-out, transform 0.8s ease-out; }
+.slide-up.visible { opacity: 1; transform: translateY(0); }

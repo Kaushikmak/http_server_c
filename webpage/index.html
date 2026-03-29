@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HTTP Proxy Webserver | C Networking</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <canvas id="bgCanvas"></canvas>
+
+    <header class="hero">
+        <div class="hero-content fade-in">
+            <h1 class="glitch" data-text="HTTP Proxy Server">HTTP Proxy Server</h1>
+            <p>A high-performance, multi-threaded networking intermediary engineered in C.</p>
+            <div class="cta-buttons">
+                <a href="#architecture" class="btn primary">Explore Architecture</a>
+                <a href="https://github.com/Kaushikmak/http_server_c" target="_blank" class="btn secondary">View on GitHub</a>
+            </div>
+            
+            <div class="game-wrapper slide-up">
+                <div class="game-header">
+                    <span>> ./proxy_router_sim.sh</span>
+                    <span>Packets Cached: <span id="scoreValue" class="highlight">0</span></span>
+                </div>
+                <canvas id="gameCanvas" width="600" height="250"></canvas>
+                <div class="game-instructions">Move mouse over the terminal to route incoming packets.</div>
+            </div>
+        </div>
+    </header>
+
+    <section id="architecture" class="features-section">
+        <h2 class="section-title fade-in">System Architecture</h2>
+        
+        <div class="feature-grid">
+            <div class="feature-card slide-up">
+                <h3>Multi-threading Core</h3>
+                <p>Leverages POSIX threads (<code>pthreads</code>) to handle multiple concurrent client connections. A semaphore system enforces a strict <code>MAX_CLIENTS</code> limit, preventing memory exhaustion and ensuring stable throughput under high load.</p>
+            </div>
+            <div class="feature-card slide-up">
+                <h3>HTTPS Secure Tunneling</h3>
+                <p>Intercepts the HTTP <code>CONNECT</code> method to establish a blind TCP relay. By utilizing the <code>select()</code> system call, the proxy seamlessly multiplexes encrypted TLS traffic between the client and upstream servers without deep packet inspection.</p>
+            </div>
+        </div>
+
+        <h2 class="section-title fade-in" style="margin-top: 4rem;">The Cache Evolution: O(N) to O(1)</h2>
+        <div class="cache-details slide-up">
+            <p>The most critical performance bottleneck in early iterations was the caching mechanism. Scanning a standard Linked List to find URLs or identify the oldest items for eviction scales linearly <strong>O(N)</strong>, causing high CPU latency as the cache grows.</p>
+            <br>
+            <p>The system was re-architected to achieve <strong>Amortized O(1)</strong> time complexity for both lookups and evictions by combining two advanced data structures:</p>
+            
+            <ul class="cache-list">
+                <li><strong>The Hash Map (O(1) Lookup):</strong> Uses the <code>djb2</code> string hashing algorithm to map incoming URLs directly to their memory addresses in a bucket array. This bypasses linear traversal entirely.</li>
+                <li><strong>The Doubly Linked List (O(1) Eviction):</strong> Maintains the strict time-based order of the Least Recently Used (LRU) policy. When a cache hit occurs, the node is isolated and moved to the <code>head</code> in constant time. When the cache overflows, the <code>tail</code> pointer is deleted instantly.</li>
+            </ul>
+
+            <div class="stats-box">
+                <div class="stat">
+                    <h4>Previous CPU Latency</h4>
+                    <span>~14,726 ns</span>
+                </div>
+                <div class="stat">
+                    <h4>Optimized CPU Latency</h4>
+                    <span class="highlight">~6,327 ns (57% Faster)</span>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <footer>
+        <p> tastytaco.</p>
+    </footer>
+
+    <script src="script.js"></script>
+</body>
+</html>
