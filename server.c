@@ -116,6 +116,35 @@ int addCache(char *data, size_t size, char *url){
     return 0;
 }
 
+void removeCache(){
+    cache *prev;
+    cache *nxt;
+    cache *temp;
+
+    int temp_lock_val = pthread_mutex_lock(&lock);
+    printf("Remove lock is required\n");
+    if(head!=NULL){
+        for(prev=head, nxt=head, temp=head; nxt->next!=NULL; nxt = nxt->next){
+            if(((nxt->next)->time) < (temp->time)){
+                temp = nxt->next;
+                prev = nxt;
+
+            }
+        }
+        if(temp == head){
+            head = head->next;
+        }else{
+            prev->next = temp->next;
+        }
+        cacheSize = cacheSize - (temp->len) - sizeof(cache) - strlen(temp->url) - 1;
+        free(temp->data);
+        free(temp->url);
+        free(temp);
+    }
+    temp_lock_val = pthread_mutex_unlock(&lock);
+    printf("Remove cache lock unlocked\n");
+}
+
 int connectRemoteServer(char *hostaddr, int portNumber){
     int remoteSocket = socket(AF_INET, SOCK_STREAM, 0);
     if(remoteSocket < 0 ){
