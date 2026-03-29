@@ -410,6 +410,135 @@ int checkHTTPVersion(char *msg){
     return version;
 }
 
+void *thread_fn(void *socketNew){
+
+    sem_wait(&semaphore);
+
+    int p;
+    sem_getvalue(&semaphore, &p);
+
+    char msg[128];
+    snprintf(msg, sizeof(msg), "Thread started, semaphore value: %d", p);
+    log_msg(LOG_DEBUG, msg);
+
+    int *t = (int *) socketNew;
+    int socket = *t;
+
+    snprintf(msg, sizeof(msg), "Handling client socket: %d", socket);
+    log_msg(LOG_INFO, msg);
+
+    int byteSendClient, len;
+
+    char *buffer = (char *)calloc(MAX_BYTES, sizeof(char));
+    bzero(buffer, MAX_BYTES);
+
+    byteSendClient = recv(socket, buffer, MAX_BYTES, 0);
+
+    while(byteSendClient > 0){
+        len = strlen(buffer);
+        if(strstr(buffer, "\r\n\r\n") == NULL){
+            byteSendClient = recv(socket, buffer + len, MAX_BYTES, 0);
+        }else{
+            break;
+        }
+    }
+
+    log_msg(LOG_DEBUG, "Full HTTP request received");
+
+    char *tempReq = (char *)malloc(strlen(buffer)*sizeof(char)+1);
+    for(size_t i=0; i<strlen(buffer); i++){
+        tempReq[i] = buffer[i];
+    }
+
+    cache *temp = find(tempReq);
+
+    // CACHE HIT
+    if(temp != NULL){
+
+        log_msg(LOG_INFO, "Serving response from cache");
+
+        int size = temp->len/sizeof(char);
+        int pos = 0;
+        char response[MAX_BYTES];
+
+        while(pos<size){
+            bzero(response, MAX_BYTES);
+            for(int i=0; i<MAX_BYTES; i++){
+                response[i] = temp->data[i];
+                pos++;
+            }
+            send(socket, response, MAX_BYTES, 0);
+        }
+
+        log_msg(LOG_DEBUG, "Cache response sent to client");
+    }
+
+    // CACHE MISS → PROCESS REQUEST
+    else if(byteSendClient > 0){
+
+        log_msg(LOG_INFO, "Cache MISS - parsing request");
+
+        len = strlen(buffer);
+
+        struct ParsedRequest *request = ParsedRequest_create();
+
+        if(ParsedRequest_parse(request, buffer, len) < 0){
+            log_msg(LOG_ERROR, "Request parsing failed");
+        }
+        else{
+
+            log_msg(LOG_DEBUG, "Request parsed successfully");
+
+            bzero(buffer, MAX_BYTES);
+
+            if(!strcmp(request->method, "GET")){
+
+                log_msg(LOG_INFO, "Processing GET request");
+
+                if(request->host && request->path && checkHTTPVersion(request->version)==1){
+
+                    byteSendClient = handle_request(socket, request, tempReq);
+
+                    if(byteSendClient == -1){
+                        log_msg(LOG_ERROR, "Request handling failed, sending 500");
+                        sendErrorMessage(socket, 500 );
+                    }
+
+                }else{
+                    log_msg(LOG_ERROR, "Invalid request fields, sending 500");
+                    sendErrorMessage(socket,500);
+                }
+
+            }else{
+                log_msg(LOG_ERROR, "Unsupported HTTP method (only GET supported)");
+            }
+        }
+
+        ParsedRequest_destroy(request);
+    }
+
+    else if(byteSendClient == 0){
+        log_msg(LOG_INFO, "Client disconnected");
+    }
+
+    shutdown(socket, SHUT_RDWR);
+    close(socket);
+
+    log_msg(LOG_DEBUG, "Socket closed");
+
+    free(buffer);
+
+    sem_post(&semaphore);
+
+    sem_getvalue(&semaphore, &p);
+    snprintf(msg, sizeof(msg), "Thread finished, semaphore value: %d", p);
+    log_msg(LOG_DEBUG, msg);
+
+    free(tempReq);
+
+    return NULL;
+}
+
 int main(int argc,char *argv[]){
 
     int clientSocketID;
