@@ -47,6 +47,39 @@ int addCache(char *data, size_t size, char *url);
 void removeCache();
 // thread function
 void *thread_fn(void *socketNEW);
+// check verify version supported by our server
+int checkHTTPVersion(char *msg);
+// send end client error message along wiht simple html
+int sendErrorMessage(int socket, int statusCode);
+// connect to remote server
+int connectRemoteServer(char *hostaddr, int portNumber);
+// function to handle all requests
+int handle_request(int clientSocketID, struct ParsedRequest *request, char *tempReq);
+
+cache *find(char *url){
+    cache *site = NULL;
+    int temp_lock_val = pthread_mutex_lock(&lock);
+    printf("Remove cache lock acquired %d\n",temp_lock_val);
+    
+    if(head!=NULL){
+        site = head;
+        while(site != NULL){
+            if(!strcmp(site->url, url)){
+                printf("LRU time track before %ld",site->time);
+                printf("\nurl fount\n");
+                site->time = time(NULL);
+                printf("LRU time track after %ld",site->time);
+                break;
+            }
+            site = site->next;
+        }
+    }else{
+        printf("url not found");
+    }
+    temp_lock_val = pthread_mutex_unlock(&lock);
+    printf("lock is unlocked");
+    return site;
+}
 
 int connectRemoteServer(char *hostaddr, int portNumber){
     int remoteSocket = socket(AF_INET, SOCK_STREAM, 0);
