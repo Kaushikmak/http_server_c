@@ -360,45 +360,60 @@ int handle_request(int clientSocketID, struct ParsedRequest *request, char *temp
     return 0;
 }
 
+const char* get_http_reason_phrase(int statusCode) {
+    switch (statusCode) {
+        /* 4xx Client Error */
+        case 400: return "Bad Request";
+        case 401: return "Unauthorized";
+        case 403: return "Forbidden";
+        case 404: return "Not Found";
+        case 405: return "Method Not Allowed";
+        case 408: return "Request Timeout";
+        case 413: return "Payload Too Large";
+        case 414: return "URI Too Long";
+        case 429: return "Too Many Requests";
+        case 431: return "Request Header Fields Too Large";
+        
+        /* 5xx Server Error */
+        case 500: return "Internal Server Error";
+        case 501: return "Not Implemented";
+        case 502: return "Bad Gateway";
+        case 503: return "Service Unavailable";
+        case 504: return "Gateway Timeout";
+        case 505: return "HTTP Version Not Supported";
+        
+        default: return "Unknown Status";
+    }
+}
+
 int sendErrorMessage(int socket, int statusCode){
 
     char msg[128];
     snprintf(msg, sizeof(msg), "Sending error response with status code: %d", statusCode);
     log_msg(LOG_INFO, msg);
 
-    char str[1024];
+    char str[2048];
     char currentTime[50];
     time_t now = time(0);
 
     struct tm data = *gmtime(&now);
     strftime(currentTime, sizeof(currentTime), "%a, %d %b %y %H:%M:%S %Z", &data);
 
-    char statusLine[256];
-    char body[512];
+    const char *reasonPhrase = get_http_reason_phrase(statusCode);
     
-    switch (statusCode)
-    {
-    case 400:
-        snprintf(statusLine, sizeof(statusLine), "HTTP/1.1 400 Bad Request\r\n");
-        snprintf(body, sizeof(body), "<html><body><h1>400 Bad Request</h1></body></html>");
-        break;
-    case 403:
-        snprintf(statusLine, sizeof(statusLine), "HTTP/1.1 403 Forbidden\r\n");
-        snprintf(body, sizeof(body), "<html><body><h1>403 Forbidden</h1></body></html>");
-        break;
-    case 404:
-        snprintf(statusLine, sizeof(statusLine), "HTTP/1.1 404 Not Found\r\n");
-        snprintf(body, sizeof(body), "<html><body><h1>404 Not Found</h1></body></html>");
-        break;
-    case 500:
-        snprintf(statusLine, sizeof(statusLine), "HTTP/1.1 500 Internal Server Error\r\n");
-        snprintf(body, sizeof(body), "<html><body><h1>500 Internal Server Error</h1></body></html>");
-        break;
-    default:
-        snprintf(statusLine, sizeof(statusLine), "HTTP/1.1 502 Bad Gateway\r\n");
-        snprintf(body, sizeof(body), "<html><body><h1>502 Bad Gateway</h1></body></html>");
-        break;
-    }
+    char statusLine[256];
+    snprintf(statusLine, sizeof(statusLine), "HTTP/1.1 %d %s\r\n", statusCode, reasonPhrase);
+
+    char body[512];
+    snprintf(body, sizeof(body), 
+        "<html>\n"
+        "<head><title>%d %s</title></head>\n"
+        "<body bgcolor=\"white\">\n"
+        "<center><h1>%d %s</h1></center>\n"
+        "<hr><center>ProxyServer/1.0</center>\n"
+        "</body>\n"
+        "</html>", 
+        statusCode, reasonPhrase, statusCode, reasonPhrase);
     
     snprintf(str, sizeof(str), 
         "%s"
@@ -411,11 +426,17 @@ int sendErrorMessage(int socket, int statusCode){
         "%s",
         statusLine, currentTime, strlen(body), body);
     
-    int bytesSent = send(socket, str, strlen(str), 0);
+    size_t total_len = strlen(str);
+    size_t bytes_sent_total = 0;
 
-    if(bytesSent < 0){
-        log_msg(LOG_ERROR, "Failed to send error response to client");
-        return -1;
+    while (bytes_sent_total < total_len) {
+        ssize_t bytes_sent = send(socket, str + bytes_sent_total, total_len - bytes_sent_total, 0);
+        
+        if (bytes_sent < 0) {
+            log_msg(LOG_ERROR, "Failed to send error response to client");
+            return -1;
+        }
+        bytes_sent_total += bytes_sent;
     }
 
     log_msg(LOG_DEBUG, "Error response sent successfully");
