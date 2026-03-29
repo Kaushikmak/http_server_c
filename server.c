@@ -8,6 +8,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <netdb.h>
 
 // globals
 #define MAX_CLIENTS 10
@@ -47,6 +48,64 @@ void removeCache();
 // thread function
 void *thread_fn(void *socketNEW);
 
+int connectRemoteServer(char *hostaddr, int portNumber){
+    int remoteSocket = socket(AF_INET, SOCK_STREAM, 0);
+    if(remoteSocket < 0 ){
+        printf("Error in creating socket");
+        return -1;
+    }
+    struct hostent *host = gethostbyname(hostaddr);
+    if(host == NULL){
+        fprintf(stderr, "No such host exits");
+        return -1;
+    }
+    struct sockaddr_in server_addr;
+    bzero((char*)&server_addr, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(portNumber);
+
+    bcopy((char*)host->h_addr_list[0], (char*)&server_addr.sin_addr.s_addr, host->h_length);
+
+    int connectStatus = connect(remoteSocket, (struct sockaddr*)&server_addr, (size_t)sizeof(server_addr));
+    if(connectStatus < 0){
+        fprintf(stderr, "Error in connecting to remote server");
+        return -1;
+    }
+    return remoteSocket;
+}
+
+int handle_request(int clientSocketID, struct ParsedRequest *request, char *tempReq){
+    char *buffer = (char *)malloc(sizeof(char)*MAX_BYTES);
+    strcpy(buffer,"GET ");
+    strcat(buffer,request->path);
+    strcat(buffer," ");
+    strcat(buffer, request->version);
+    strcat(buffer, "\r\n");
+
+    size_t len = strlen(buffer);
+
+    if(ParsedHeader_set(request, "Connection", "close") < 0 ){
+        printf("Set header key is not working\n");
+    }
+
+    if(ParsedHeader_get(request,"Host") == NULL){
+        if(ParsedHeader_set(request, "Host", request->host) < 0){
+            printf("Set Host header key is not working\n");
+        }
+    }
+
+    if(ParsedRequest_unparse_headers(request, buffer + len, (size_t)MAX_BYTES - len) < 0 ){
+        printf("Unparse failed\n");
+    }
+
+    int server_port = 80;
+    if(request->port != NULL){
+        server_port = atoi(request->port);
+    }
+
+    int remoteSocketID = connectRemoteServer(request->host, server_port);
+
+}
 
 void *thread_fn(void *socketNew){
     sem_wait(&semaphore);
