@@ -1,2 +1,17 @@
 proxy
+my_benchmark
+src/*.o
+benchmarks/*.o
 *.o
+
+
+benchmark_results.txt
+benchmark_results.csv
+
+build/
+CMakeCache.txt
+CMakeFiles/
+Makefile.cmake
+cmake_install.cmake
+
+.DS_Store
