@@ -143,6 +143,74 @@ int handle_request(int clientSocketID, struct ParsedRequest *request, char *temp
     return 0;
 }
 
+int sendErrorMessage(int socket, int statusCode){
+    char str[1024];
+    char currentTime[50];
+    time_t now = time(0);
+
+    struct tm data = *gmtime(&now);
+    strftime(currentTime, sizeof(currentTime), "%a, %d %b %y %H:%M:%S %Z", &data);
+
+    char statusLine[256];
+    char body[512];
+    
+    switch (statusCode)
+    {
+    case 400:
+        snprintf(statusLine, sizeof(statusLine), "HTTP/1.1 400 Bad Request\r\n");
+        snprintf(body, sizeof(body), "<html><body><h1>400 Bad Request</h1></body></html>");
+        break;
+    case 403:
+        snprintf(statusLine, sizeof(statusLine), "HTTP/1.1 403 Forbidden\r\n");
+        snprintf(body, sizeof(body), "<html><body><h1>403 Forbidden</h1></body></html>");
+        break;
+    case 404:
+        snprintf(statusLine, sizeof(statusLine), "HTTP/1.1 404 Not Found\r\n");
+        snprintf(body, sizeof(body), "<html><body><h1>404 Not Found</h1></body></html>");
+        break;
+    case 500:
+        snprintf(statusLine, sizeof(statusLine), "HTTP/1.1 500 Internal Server Error\r\n");
+        snprintf(body, sizeof(body), "<html><body><h1>500 Internal Server Error</h1></body></html>");
+        break;
+    default:
+        snprintf(statusLine, sizeof(statusLine), "HTTP/1.1 502 Bad Gateway\r\n");
+        snprintf(body, sizeof(body), "<html><body><h1>502 Bad Gateway</h1></body></html>");
+        break;
+    }
+    
+    snprintf(str, sizeof(str), 
+        "%s"
+        "Date: %s\r\n"
+        "Server: ProxyServer/1.0\r\n"
+        "Content-Type: text/html\r\n"
+        "Content-Length: %zu\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+        "%s",
+        statusLine, currentTime, strlen(body), body);
+    
+    int bytesSent = send(socket, str, strlen(str), 0);
+    if(bytesSent < 0){
+        perror("Error sending error message");
+        return -1;
+    }
+    
+    return 0;
+}
+
+int checkHTTPVersion(char *msg){
+    int version = -1;
+    if(strncmp(msg, "HTTP/1.1", 8) == 0){
+        version  = 1;
+    }else if(strncmp(msg, "HTTP/1.0",8) == 0){
+        version = 1;
+    }else{
+        version = -1;
+    }
+    return version;
+
+}
+
 void *thread_fn(void *socketNew){
     sem_wait(&semaphore);
     int p;
