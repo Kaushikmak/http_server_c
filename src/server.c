@@ -311,25 +311,31 @@ int handle_request(int clientSocketID, struct ParsedRequest *request, char *temp
     log_msg(LOG_INFO, "Handling new client request");
 
     char *buffer = (char *)malloc(sizeof(char)*MAX_BYTES);
+    bzero(buffer, MAX_BYTES);
 
     strcpy(buffer, method);
     strcat(buffer, " ");
-    strcat(buffer,request->path);
-    strcat(buffer," ");
+    strcat(buffer, request->path ? request->path : "/");
+    strcat(buffer, " ");
     strcat(buffer, request->version);
     strcat(buffer, "\r\n");
 
     size_t len = strlen(buffer);
 
-    if(ParsedHeader_set(request, "Connection", "close") < 0 ){
-        log_msg(LOG_ERROR, "Failed to set Connection header");
+    if (request->port != NULL) {
+        char host_header[256];
+        snprintf(host_header, sizeof(host_header), "%s:%s", request->host, request->port);
+        ParsedHeader_set(request, "Host", host_header);
+    } else {
+        ParsedHeader_set(request, "Host", request->host);
     }
 
-    if(ParsedHeader_get(request,"Host") == NULL){
-        if(ParsedHeader_set(request, "Host", request->host) < 0){
-            log_msg(LOG_ERROR, "Failed to set Host header");
-        }
-    }
+    ParsedHeader_set(request, "Connection", "close");
+
+    ParsedHeader_remove(request, "Proxy-Connection");
+    ParsedHeader_remove(request, "Keep-Alive");
+    ParsedHeader_remove(request, "Upgrade");
+    ParsedHeader_remove(request, "Transfer-Encoding");
 
     if(ParsedRequest_unparse_headers(request, buffer + len, (size_t)MAX_BYTES - len) < 0 ){
         log_msg(LOG_ERROR, "Header unparsing failed");
@@ -348,14 +354,29 @@ int handle_request(int clientSocketID, struct ParsedRequest *request, char *temp
 
     if(remoteSocketID < 0){
         log_msg(LOG_ERROR, "Failed to connect to remote server");
+        free(buffer);
         return -1;
     }
 
-    int byteSend = send(remoteSocketID, buffer, strlen(buffer), 0);
+    int total_sent = 0;
+    int req_len = strlen(buffer);
+
+    while (total_sent < req_len) {
+        int sent = send(remoteSocketID, buffer + total_sent, req_len - total_sent, 0);
+        if (sent <= 0) {
+            log_msg(LOG_ERROR, "Failed to send full request to remote server");
+            free(buffer);
+            close(remoteSocketID);
+            return -1;
+        }
+        total_sent += sent;
+    }
+
     log_msg(LOG_DEBUG, "Request sent to remote server");
 
     struct ParsedHeader *cl_header = ParsedHeader_get(request, "Content-Length");
     int content_length = 0;
+
     if (cl_header != NULL) {
         content_length = atoi(cl_header->value);
     }
@@ -364,7 +385,8 @@ int handle_request(int clientSocketID, struct ParsedRequest *request, char *temp
         char *body_start = strstr(tempReq, "\r\n\r\n");
         if (body_start != NULL) {
             body_start += 4;
-            int body_in_buffer = strlen(body_start); 
+
+            int body_in_buffer = strlen(body_start);
             if (body_in_buffer > 0) {
                 send(remoteSocketID, body_start, body_in_buffer, 0);
                 content_length -= body_in_buffer;
@@ -373,57 +395,68 @@ int handle_request(int clientSocketID, struct ParsedRequest *request, char *temp
 
         while (content_length > 0) {
             bzero(buffer, MAX_BYTES);
-            int bytes_to_read = (content_length < MAX_BYTES) ? content_length : MAX_BYTES;
-            int bytes_read = recv(clientSocketID, buffer, bytes_to_read, 0);
+
+            int to_read = (content_length < MAX_BYTES) ? content_length : MAX_BYTES;
+            int bytes_read = recv(clientSocketID, buffer, to_read, 0);
+
             if (bytes_read <= 0) break;
-            send(remoteSocketID, buffer, bytes_read, 0);
+
+            int sent_total = 0;
+            while (sent_total < bytes_read) {
+                int sent = send(remoteSocketID, buffer + sent_total, bytes_read - sent_total, 0);
+                if (sent <= 0) break;
+                sent_total += sent;
+            }
+
             content_length -= bytes_read;
         }
     }
 
-    bzero(buffer, MAX_BYTES);
-    byteSend = recv(remoteSocketID, buffer, MAX_BYTES-1, 0);
-
-    char *tempBuffer = (char*)malloc(MAX_BYTES*sizeof(char));
+    char *tempBuffer = (char*)malloc(MAX_BYTES);
     int tempBufSize = MAX_BYTES;
     int tempBufferIDX = 0;
 
-    while(byteSend > 0 ){
+    bzero(buffer, MAX_BYTES);
+    int bytes_read = recv(remoteSocketID, buffer, MAX_BYTES, 0);
 
-        byteSend = send(clientSocketID, buffer, byteSend, 0);
-
-        for(size_t i=0; i<byteSend/sizeof(char); i++){
-            tempBuffer[tempBufferIDX] = buffer[i];
-            tempBufferIDX++; 
+    while (bytes_read > 0) {
+        int sent_total = 0;
+        while (sent_total < bytes_read) {
+            int sent = send(clientSocketID, buffer + sent_total, bytes_read - sent_total, 0);
+            if (sent <= 0) {
+                log_msg(LOG_ERROR, "Error sending data to client");
+                break;
+            }
+            sent_total += sent;
         }
 
-        tempBufSize += MAX_BYTES;
-        tempBuffer = (char*)realloc(tempBuffer, tempBufSize);
-
-        if( byteSend < 0 ){
-            log_msg(LOG_ERROR, "Error sending data to client");
-            break;
+        if (tempBufferIDX + bytes_read >= tempBufSize) {
+            tempBufSize += MAX_BYTES;
+            tempBuffer = (char*)realloc(tempBuffer, tempBufSize);
         }
+
+        memcpy(tempBuffer + tempBufferIDX, buffer, bytes_read);
+        tempBufferIDX += bytes_read;
 
         bzero(buffer, MAX_BYTES);
-        byteSend = recv(remoteSocketID, buffer, MAX_BYTES-1, 0);
+        bytes_read = recv(remoteSocketID, buffer, MAX_BYTES, 0);
     }
 
     tempBuffer[tempBufferIDX] = '\0';
 
     log_msg(LOG_INFO, "Response received and forwarded to client");
-    free(buffer);
 
-    // Cache Isolation
     if (strcmp(method, "GET") == 0) {
-        addCache(tempBuffer, tempBufferIDX, tempReq); 
+        addCache(tempBuffer, tempBufferIDX, tempReq);
         log_msg(LOG_INFO, "Response cached");
     } else {
         log_msg(LOG_INFO, "Response not cached (method not GET)");
     }
 
+    free(buffer);
     free(tempBuffer);
     close(remoteSocketID);
+
     log_msg(LOG_DEBUG, "Remote socket closed");
 
     return 0;
