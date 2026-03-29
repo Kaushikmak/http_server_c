@@ -9,6 +9,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <unistd.h>
 
 // globals
 #define MAX_CLIENTS         10
@@ -217,7 +218,7 @@ int handle_request(int clientSocketID, struct ParsedRequest *request, char *temp
     int tempBufferIDX = 0;
     while(byteSend > 0 ){
         byteSend = send(clientSocketID, buffer, byteSend, 0);
-        for(int i=0; i<byteSend/sizeof(char); i++){
+        for(size_t i=0; i<byteSend/sizeof(char); i++){
             tempBuffer[tempBufferIDX] = buffer[i];
             tempBufferIDX++; 
         }
@@ -334,7 +335,7 @@ void *thread_fn(void *socketNew){
     }
 
     char *tempReq = (char *)malloc(strlen(buffer)*sizeof(char)+1);
-    for(int i=0; i<strlen(buffer); i++){
+    for(size_t i=0; i<strlen(buffer); i++){
         tempReq[i] = buffer[i];
     }
 
@@ -385,7 +386,7 @@ void *thread_fn(void *socketNew){
     close(socket);
     free(buffer);
     sem_post(&semaphore);
-    sem_getvalue(&semaphore, p);
+    sem_getvalue(&semaphore, &p);
     printf("Semaphore POST value is %d:\n",p);
     free(tempReq);
     return NULL;
@@ -446,7 +447,7 @@ int main(int argc,char *argv[]){
     while(1){
         bzero((char*)&client_addr, sizeof(client_addr));
         clientLen = sizeof(client_addr);
-        clientSocketID = accept(socketID, (struct sockaddr_in*)&client_addr, (socklen_t*)&clientLen);
+        clientSocketID = accept(socketID, (struct sockaddr*)&client_addr, (socklen_t*)&clientLen);
         if(clientSocketID<0){
             perror("Not able to connect to client");
             exit(1);
@@ -459,7 +460,7 @@ int main(int argc,char *argv[]){
         char str[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &ip_addr, str, INET_ADDRSTRLEN); 
 
-        printf("Client is conneted to PORT:%d with IP:%s\n", ntohs(client_addr.sin_port), ip_addr);
+        printf("Client is conneted to PORT:%d with IP:%s\n", ntohs(client_addr.sin_port), str);
 
         pthread_create(&threadID[i], NULL, thread_fn, (void *)&connectedSocketID[i]);
 
