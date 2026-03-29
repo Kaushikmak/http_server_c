@@ -10,6 +10,8 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <unistd.h>
+// custom logger
+#include "logger.h"
 
 // globals
 #define MAX_CLIENTS         10
@@ -61,40 +63,61 @@ int handle_request(int clientSocketID, struct ParsedRequest *request, char *temp
 
 cache *find(char *url){
     cache *site = NULL;
+
     int temp_lock_val = pthread_mutex_lock(&lock);
-    printf("Remove cache lock acquired %d\n",temp_lock_val);
-    
+    log_msg(LOG_DEBUG, "Cache lock acquired in find()");
+
     if(head!=NULL){
         site = head;
         while(site != NULL){
             if(!strcmp(site->url, url)){
-                printf("LRU time track before %ld",site->time);
-                printf("\nurl fount\n");
+                char msg[128];
+
+                snprintf(msg, sizeof(msg), "Cache HIT for URL: %s", url);
+                log_msg(LOG_INFO, msg);
+
+                snprintf(msg, sizeof(msg), "LRU time before: %ld", site->time);
+                log_msg(LOG_DEBUG, msg);
+
                 site->time = time(NULL);
-                printf("LRU time track after %ld",site->time);
+
+                snprintf(msg, sizeof(msg), "LRU time updated: %ld", site->time);
+                log_msg(LOG_DEBUG, msg);
+
                 break;
             }
             site = site->next;
         }
+        if(site == NULL){
+            char msg[128];
+            snprintf(msg, sizeof(msg), "Cache MISS for URL: %s", url);
+            log_msg(LOG_INFO, msg);
+        }
     }else{
-        printf("url not found");
+        log_msg(LOG_INFO, "Cache is empty");
     }
+
     temp_lock_val = pthread_mutex_unlock(&lock);
-    printf("lock is unlocked");
+    log_msg(LOG_DEBUG, "Cache lock released in find()");
+
     return site;
 }
 
 int addCache(char *data, size_t size, char *url){
     int temp_lock_val = pthread_mutex_lock(&lock);
-    printf("Add cache lock acquired %d\n",temp_lock_val);
+    log_msg(LOG_DEBUG, "Cache lock acquired in addCache()");
 
     int elementSize = size+1+strlen(url)+sizeof(cache);
+
     if(elementSize > MAX_ELEMENT_SIZE){
+        log_msg(LOG_ERROR, "Cache element too large, skipping insert");
+
         temp_lock_val = pthread_mutex_unlock(&lock);
-        printf("Add cache lock is unlocked\n");
+        log_msg(LOG_DEBUG, "Cache lock released in addCache()");
         return 0;
     }else{
         while (cacheSize+elementSize > MAX_SIZE ){   
+            log_msg(LOG_DEBUG, "Cache overflow, triggering eviction");
             removeCache();
         }
 
@@ -102,16 +125,24 @@ int addCache(char *data, size_t size, char *url){
         
         element->data = (char*)malloc(size+1);
         strcpy(element->data, data);
+
         element->url = (char*)malloc(1+(strlen(url)*sizeof(char)));
         strcpy(element->url, url);
 
         element->time = time(NULL);
         element->next = head;
         element->len = size;
+
         head = element;
         cacheSize += elementSize;
+
+        char msg[128];
+        snprintf(msg, sizeof(msg), "Cache INSERT: URL=%s SIZE=%zu", url, size);
+        log_msg(LOG_INFO, msg);
+
         temp_lock_val = pthread_mutex_unlock(&lock);
-        printf("Add cache lock is unloacked");
+        log_msg(LOG_DEBUG, "Cache lock released in addCache()");
+
         return 1;
     }
     return 0;
@@ -123,57 +154,90 @@ void removeCache(){
     cache *temp;
 
     int temp_lock_val = pthread_mutex_lock(&lock);
-    printf("Remove lock is required\n");
+    log_msg(LOG_DEBUG, "Cache lock acquired in removeCache()");
+
     if(head!=NULL){
         for(prev=head, nxt=head, temp=head; nxt->next!=NULL; nxt = nxt->next){
             if(((nxt->next)->time) < (temp->time)){
                 temp = nxt->next;
                 prev = nxt;
-
             }
         }
+
+        char msg[128];
+        snprintf(msg, sizeof(msg), "Evicting cache entry URL=%s", temp->url);
+        log_msg(LOG_INFO, msg);
+
         if(temp == head){
             head = head->next;
         }else{
             prev->next = temp->next;
         }
+
         cacheSize = cacheSize - (temp->len) - sizeof(cache) - strlen(temp->url) - 1;
+
         free(temp->data);
         free(temp->url);
         free(temp);
+
+        log_msg(LOG_DEBUG, "Cache eviction completed");
+    }else{
+        log_msg(LOG_DEBUG, "removeCache() called but cache is empty");
     }
+
     temp_lock_val = pthread_mutex_unlock(&lock);
-    printf("Remove cache lock unlocked\n");
+    log_msg(LOG_DEBUG, "Cache lock released in removeCache()");
 }
 
 int connectRemoteServer(char *hostaddr, int portNumber){
     int remoteSocket = socket(AF_INET, SOCK_STREAM, 0);
+
     if(remoteSocket < 0 ){
-        printf("Error in creating socket");
+        log_msg(LOG_ERROR, "Socket creation failed in connectRemoteServer()");
         return -1;
     }
+
+    char msg[128];
+    snprintf(msg, sizeof(msg), "Connecting to remote server %s:%d", hostaddr, portNumber);
+    log_msg(LOG_INFO, msg);
+
     struct hostent *host = gethostbyname(hostaddr);
+
     if(host == NULL){
-        fprintf(stderr, "No such host exits");
+        log_msg(LOG_ERROR, "DNS resolution failed (gethostbyname)");
         return -1;
     }
+
     struct sockaddr_in server_addr;
     bzero((char*)&server_addr, sizeof(server_addr));
+
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(portNumber);
 
-    bcopy((char*)host->h_addr_list[0], (char*)&server_addr.sin_addr.s_addr, host->h_length);
+    bcopy((char*)host->h_addr_list[0],
+          (char*)&server_addr.sin_addr.s_addr,
+          host->h_length);
 
-    int connectStatus = connect(remoteSocket, (struct sockaddr*)&server_addr, (size_t)sizeof(server_addr));
+    int connectStatus = connect(remoteSocket,
+                                (struct sockaddr*)&server_addr,
+                                (size_t)sizeof(server_addr));
+
     if(connectStatus < 0){
-        fprintf(stderr, "Error in connecting to remote server");
+        log_msg(LOG_ERROR, "Connection to remote server failed");
         return -1;
     }
+
+    log_msg(LOG_INFO, "Connection to remote server successful");
+
     return remoteSocket;
 }
 
 int handle_request(int clientSocketID, struct ParsedRequest *request, char *tempReq){
+
+    log_msg(LOG_INFO, "Handling new client request");
+
     char *buffer = (char *)malloc(sizeof(char)*MAX_BYTES);
+
     strcpy(buffer,"GET ");
     strcat(buffer,request->path);
     strcat(buffer," ");
@@ -183,17 +247,17 @@ int handle_request(int clientSocketID, struct ParsedRequest *request, char *temp
     size_t len = strlen(buffer);
 
     if(ParsedHeader_set(request, "Connection", "close") < 0 ){
-        printf("Set header key is not working\n");
+        log_msg(LOG_ERROR, "Failed to set Connection header");
     }
 
     if(ParsedHeader_get(request,"Host") == NULL){
         if(ParsedHeader_set(request, "Host", request->host) < 0){
-            printf("Set Host header key is not working\n");
+            log_msg(LOG_ERROR, "Failed to set Host header");
         }
     }
 
     if(ParsedRequest_unparse_headers(request, buffer + len, (size_t)MAX_BYTES - len) < 0 ){
-        printf("Unparse failed\n");
+        log_msg(LOG_ERROR, "Header unparsing failed");
     }
 
     int server_port = 80;
@@ -201,47 +265,75 @@ int handle_request(int clientSocketID, struct ParsedRequest *request, char *temp
         server_port = atoi(request->port);
     }
 
+    char msg[128];
+    snprintf(msg, sizeof(msg), "Forwarding request to %s:%d", request->host, server_port);
+    log_msg(LOG_INFO, msg);
+
     int remoteSocketID = connectRemoteServer(request->host, server_port);
 
     if(remoteSocketID < 0){
+        log_msg(LOG_ERROR, "Failed to connect to remote server");
         return -1;
     }
 
     int byteSend = send(remoteSocketID, buffer, strlen(buffer), 0);
+
+    log_msg(LOG_DEBUG, "Request sent to remote server");
+
     bzero(buffer, MAX_BYTES);
 
     byteSend = recv(remoteSocketID, buffer, MAX_BYTES-1, 0);
+
     char *tempBuffer = (char*)malloc(MAX_BYTES*sizeof(char));
-
     int tempBufSize = MAX_BYTES;
-
     int tempBufferIDX = 0;
+
     while(byteSend > 0 ){
+
         byteSend = send(clientSocketID, buffer, byteSend, 0);
+
         for(size_t i=0; i<byteSend/sizeof(char); i++){
             tempBuffer[tempBufferIDX] = buffer[i];
             tempBufferIDX++; 
         }
+
         tempBufSize += MAX_BYTES;
         tempBuffer = (char*)realloc(tempBuffer, tempBufSize);
+
         if( byteSend < 0 ){
-            perror("Error in sending data to client\n");
+            log_msg(LOG_ERROR, "Error sending data to client");
             break;
         }
+
         bzero(buffer, MAX_BYTES);
         byteSend = recv(remoteSocketID, buffer, MAX_BYTES-1, 0);
     }
+
     tempBuffer[tempBufferIDX] = '\0';
 
+    log_msg(LOG_INFO, "Response received and forwarded to client");
+
     free(buffer);
+
     addCache(tempBuffer, strlen(tempBuffer), tempReq);
+
+    log_msg(LOG_INFO, "Response cached");
+
     free(tempBuffer);
+
     close(remoteSocketID);
+
+    log_msg(LOG_DEBUG, "Remote socket closed");
 
     return 0;
 }
 
 int sendErrorMessage(int socket, int statusCode){
+
+    char msg[128];
+    snprintf(msg, sizeof(msg), "Sending error response with status code: %d", statusCode);
+    log_msg(LOG_INFO, msg);
+
     char str[1024];
     char currentTime[50];
     time_t now = time(0);
@@ -288,111 +380,38 @@ int sendErrorMessage(int socket, int statusCode){
         statusLine, currentTime, strlen(body), body);
     
     int bytesSent = send(socket, str, strlen(str), 0);
+
     if(bytesSent < 0){
-        perror("Error sending error message");
+        log_msg(LOG_ERROR, "Failed to send error response to client");
         return -1;
     }
-    
+
+    log_msg(LOG_DEBUG, "Error response sent successfully");
+
     return 0;
 }
 
 int checkHTTPVersion(char *msg){
     int version = -1;
+
     if(strncmp(msg, "HTTP/1.1", 8) == 0){
+        log_msg(LOG_DEBUG, "HTTP version detected: 1.1");
         version  = 1;
-    }else if(strncmp(msg, "HTTP/1.0",8) == 0){
+    }
+    else if(strncmp(msg, "HTTP/1.0",8) == 0){
+        log_msg(LOG_DEBUG, "HTTP version detected: 1.0");
         version = 1;
-    }else{
+    }
+    else{
+        log_msg(LOG_ERROR, "Unsupported HTTP version");
         version = -1;
     }
+
     return version;
-
-}
-
-void *thread_fn(void *socketNew){
-    sem_wait(&semaphore);
-    int p;
-    sem_getvalue(&semaphore, &p);
-    printf("semaphore value: %d\n",p);
-
-    int *t = (int *) socketNew;
-    int socket = *t;
-    int byteSendClient, len;
-
-    char *buffer = (char *)calloc(MAX_BYTES, sizeof(char));
-
-    bzero(buffer, MAX_BYTES);
-
-    byteSendClient = recv(socket, buffer, MAX_BYTES, 0);
-
-    while(byteSendClient > 0){
-        len = strlen(buffer);
-        if(strstr(buffer, "\r\n\r\n") == NULL){
-            byteSendClient = recv(socket, buffer + len, MAX_BYTES, 0);
-        }else{
-            break;
-        }
-    }
-
-    char *tempReq = (char *)malloc(strlen(buffer)*sizeof(char)+1);
-    for(size_t i=0; i<strlen(buffer); i++){
-        tempReq[i] = buffer[i];
-    }
-
-    cache *temp = find(tempReq);
-    // if already in cache
-    if(temp != NULL){
-        int size = temp->len/sizeof(char);
-        int pos = 0;
-        char response[MAX_BYTES];
-
-        while(pos<size){
-            bzero(response, MAX_BYTES);
-            for(int i=0; i<MAX_BYTES; i++){
-                response[i] = temp->data[i];
-                pos++;
-            }
-            send(socket, response, MAX_BYTES, 0);
-        }
-        printf("Data retrived from the cache\n");
-        printf("%s\n\n", response);
-    }else if(byteSendClient > 0){
-        len = strlen(buffer);
-        struct ParsedRequest *request = ParsedRequest_create();
-        if(ParsedRequest_parse(request, buffer, len) < 0){
-            printf("Parsing failed");
-        }else{
-            bzero(buffer, MAX_BYTES);
-            if(!strcmp(request->method, "GET")){
-                if(request->host && request->path && checkHTTPVersion(request->version)==1){
-                    byteSendClient = handle_request(socket, request, tempReq);
-                    if(byteSendClient == -1){
-                        sendErrorMessage(socket, 500 );
-                    }
-                }else{
-                    sendErrorMessage(socket,500);
-                }
-            }else{
-                printf("Currently PROXY SERVER only SUPPORT GET method\n");
-            }
-        }
-        ParsedRequest_destroy(request);
-    }else if(byteSendClient == 0){
-        printf("Client is disconnected");
-    }
-
-    shutdown(socket, SHUT_RDWR);
-
-    close(socket);
-    free(buffer);
-    sem_post(&semaphore);
-    sem_getvalue(&semaphore, &p);
-    printf("Semaphore POST value is %d:\n",p);
-    free(tempReq);
-    return NULL;
 }
 
 int main(int argc,char *argv[]){
+
     int clientSocketID;
     int clientLen;
     
@@ -401,26 +420,29 @@ int main(int argc,char *argv[]){
     sem_init(&semaphore, 0, MAX_CLIENTS);
     pthread_mutex_init(&lock, NULL);
 
-    // first argument is portnumber
+    log_init();
+
     if(argc == 2){
         PORT = atoi(argv[1]);
     }else{
-        printf("Too few arguments");
+        log_msg(LOG_ERROR, "Too few arguments. Usage: ./proxy <port>");
         exit(1);
     }
 
-    printf("Starting proxy server at port: %d\n",PORT);
+    char msg[128];
+    snprintf(msg, sizeof(msg), "Starting proxy server at port: %d", PORT);
+    log_msg(LOG_INFO, msg);
 
     socketID = socket(AF_INET, SOCK_STREAM, 0);
 
     if(socketID<0){
-        perror("Failed to create socket");
+        log_msg(LOG_ERROR, "Failed to create socket");
         exit(1);
     }
 
     int reuse = 1;
     if(setsockopt(socketID, SOL_SOCKET, SO_REUSEADDR, (const char*)&reuse, sizeof(reuse)) < 0){
-        perror("setsockopt failed to reuse socket");
+        log_msg(LOG_ERROR, "setsockopt failed to reuse socket");
     }
 
     bzero((char*)&server_addr, sizeof(server_addr));
@@ -428,28 +450,36 @@ int main(int argc,char *argv[]){
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(PORT);
     server_addr.sin_addr.s_addr = INADDR_ANY;
+
     if(bind(socketID, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0){
-        perror("PORT is not available");
+        log_msg(LOG_ERROR, "PORT bind failed (maybe already in use)");
         exit(1);
     }
 
-    printf("Binding on port: %d\n",PORT);
+    snprintf(msg, sizeof(msg), "Binding successful on port: %d", PORT);
+    log_msg(LOG_INFO, msg);
 
     int listenStatus = listen(socketID, MAX_CLIENTS);
+
     if(listenStatus<0){
-        perror("Error in listening");
+        log_msg(LOG_ERROR, "Error in listening on socket");
         exit(1);
     }
+
+    log_msg(LOG_INFO, "Server is now listening for incoming connections");
 
     int i = 0;
     int connectedSocketID[MAX_CLIENTS];
 
     while(1){
+
         bzero((char*)&client_addr, sizeof(client_addr));
         clientLen = sizeof(client_addr);
+
         clientSocketID = accept(socketID, (struct sockaddr*)&client_addr, (socklen_t*)&clientLen);
+
         if(clientSocketID<0){
-            perror("Not able to connect to client");
+            log_msg(LOG_ERROR, "Failed to accept client connection");
             exit(1);
         }else{
             connectedSocketID[i] = clientSocketID;
@@ -457,16 +487,24 @@ int main(int argc,char *argv[]){
 
         struct sockaddr_in* clientptr = (struct sockaddr_in*)&client_addr;
         struct in_addr ip_addr = clientptr->sin_addr;
+
         char str[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &ip_addr, str, INET_ADDRSTRLEN); 
 
-        printf("Client is conneted to PORT:%d with IP:%s\n", ntohs(client_addr.sin_port), str);
+        snprintf(msg, sizeof(msg), "Client connected PORT:%d IP:%s",
+                 ntohs(client_addr.sin_port), str);
+        log_msg(LOG_INFO, msg);
 
         pthread_create(&threadID[i], NULL, thread_fn, (void *)&connectedSocketID[i]);
 
         i++;
     }
+
     close(socketID);
+
+    log_msg(LOG_INFO, "Server shutting down");
+
+    log_destroy();
 
     return 0;
 }
