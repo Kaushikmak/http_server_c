@@ -354,7 +354,6 @@ int handle_request(int clientSocketID, struct ParsedRequest *request, char *temp
     int byteSend = send(remoteSocketID, buffer, strlen(buffer), 0);
     log_msg(LOG_DEBUG, "Request sent to remote server");
 
-    // --- Payload Forwarding Logic ---
     struct ParsedHeader *cl_header = ParsedHeader_get(request, "Content-Length");
     int content_length = 0;
     if (cl_header != NULL) {
@@ -372,7 +371,6 @@ int handle_request(int clientSocketID, struct ParsedRequest *request, char *temp
             }
         }
 
-        // Stream remaining payload bytes from client to remote
         while (content_length > 0) {
             bzero(buffer, MAX_BYTES);
             int bytes_to_read = (content_length < MAX_BYTES) ? content_length : MAX_BYTES;
@@ -382,7 +380,6 @@ int handle_request(int clientSocketID, struct ParsedRequest *request, char *temp
             content_length -= bytes_read;
         }
     }
-    // --------------------------------
 
     bzero(buffer, MAX_BYTES);
     byteSend = recv(remoteSocketID, buffer, MAX_BYTES-1, 0);
