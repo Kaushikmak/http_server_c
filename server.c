@@ -59,7 +59,7 @@ int sendErrorMessage(int socket, int statusCode);
 // connect to remote server
 int connectRemoteServer(char *hostaddr, int portNumber);
 // function to handle all requests
-int handle_request(int clientSocketID, struct ParsedRequest *request, char *tempReq);
+int handle_request(int clientSocketID, struct ParsedRequest *request, char *tempReq, const char *method);
 
 cache *find(char *url){
     cache *site = NULL;
@@ -232,13 +232,16 @@ int connectRemoteServer(char *hostaddr, int portNumber){
     return remoteSocket;
 }
 
-int handle_request(int clientSocketID, struct ParsedRequest *request, char *tempReq){
+// Update around line 188
+int handle_request(int clientSocketID, struct ParsedRequest *request, char *tempReq, const char *method){
 
     log_msg(LOG_INFO, "Handling new client request");
 
     char *buffer = (char *)malloc(sizeof(char)*MAX_BYTES);
 
-    strcpy(buffer,"GET ");
+    // Dynamically inject the original method
+    strcpy(buffer, method);
+    strcat(buffer, " ");
     strcat(buffer,request->path);
     strcat(buffer," ");
     strcat(buffer, request->version);
@@ -277,11 +280,39 @@ int handle_request(int clientSocketID, struct ParsedRequest *request, char *temp
     }
 
     int byteSend = send(remoteSocketID, buffer, strlen(buffer), 0);
-
     log_msg(LOG_DEBUG, "Request sent to remote server");
 
-    bzero(buffer, MAX_BYTES);
+    // --- Payload Forwarding Logic ---
+    struct ParsedHeader *cl_header = ParsedHeader_get(request, "Content-Length");
+    int content_length = 0;
+    if (cl_header != NULL) {
+        content_length = atoi(cl_header->value);
+    }
 
+    if (content_length > 0) {
+        char *body_start = strstr(tempReq, "\r\n\r\n");
+        if (body_start != NULL) {
+            body_start += 4;
+            int body_in_buffer = strlen(body_start); 
+            if (body_in_buffer > 0) {
+                send(remoteSocketID, body_start, body_in_buffer, 0);
+                content_length -= body_in_buffer;
+            }
+        }
+
+        // Stream remaining payload bytes from client to remote
+        while (content_length > 0) {
+            bzero(buffer, MAX_BYTES);
+            int bytes_to_read = (content_length < MAX_BYTES) ? content_length : MAX_BYTES;
+            int bytes_read = recv(clientSocketID, buffer, bytes_to_read, 0);
+            if (bytes_read <= 0) break;
+            send(remoteSocketID, buffer, bytes_read, 0);
+            content_length -= bytes_read;
+        }
+    }
+    // --------------------------------
+
+    bzero(buffer, MAX_BYTES);
     byteSend = recv(remoteSocketID, buffer, MAX_BYTES-1, 0);
 
     char *tempBuffer = (char*)malloc(MAX_BYTES*sizeof(char));
@@ -312,17 +343,18 @@ int handle_request(int clientSocketID, struct ParsedRequest *request, char *temp
     tempBuffer[tempBufferIDX] = '\0';
 
     log_msg(LOG_INFO, "Response received and forwarded to client");
-
     free(buffer);
 
-    addCache(tempBuffer, strlen(tempBuffer), tempReq);
-
-    log_msg(LOG_INFO, "Response cached");
+    // Cache Isolation
+    if (strcmp(method, "GET") == 0) {
+        addCache(tempBuffer, tempBufferIDX, tempReq); 
+        log_msg(LOG_INFO, "Response cached");
+    } else {
+        log_msg(LOG_INFO, "Response not cached (method not GET)");
+    }
 
     free(tempBuffer);
-
     close(remoteSocketID);
-
     log_msg(LOG_DEBUG, "Remote socket closed");
 
     return 0;
@@ -445,10 +477,24 @@ void *thread_fn(void *socketNew){
 
     log_msg(LOG_DEBUG, "Full HTTP request received");
 
+    char original_method[16] = {0};
+    sscanf(buffer, "%15s", original_method);
+    size_t method_len = strlen(original_method);
+
+    if (strcmp(original_method, "GET") != 0) {
+        if (method_len >= 3) {
+            buffer[0] = 'G'; buffer[1] = 'E'; buffer[2] = 'T';
+            for (size_t i = 3; i < method_len; i++) {
+                buffer[i] = ' ';
+            }
+        }
+    }
+
     char *tempReq = (char *)malloc(strlen(buffer)*sizeof(char)+1);
     for(size_t i=0; i<strlen(buffer); i++){
         tempReq[i] = buffer[i];
     }
+    tempReq[strlen(buffer)] = '\0';
 
     cache *temp = find(tempReq);
 
@@ -491,26 +537,38 @@ void *thread_fn(void *socketNew){
 
             bzero(buffer, MAX_BYTES);
 
-            if(!strcmp(request->method, "GET")){
+            int is_supported = 0;
+            const char *methods[] = {"GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH", "TRACE", "CONNECT"};
+            for(int i=0; i<9; i++){
+                if(strcmp(original_method, methods[i]) == 0){
+                    is_supported = 1; 
+                    break;
+                }
+            }
 
-                log_msg(LOG_INFO, "Processing GET request");
+            if(is_supported){
+
+                char log_buf[128];
+                snprintf(log_buf, sizeof(log_buf), "Processing %s request", original_method);
+                log_msg(LOG_INFO, log_buf);
 
                 if(request->host && request->path && checkHTTPVersion(request->version)==1){
 
-                    byteSendClient = handle_request(socket, request, tempReq);
+                    byteSendClient = handle_request(socket, request, tempReq, original_method);
 
                     if(byteSendClient == -1){
                         log_msg(LOG_ERROR, "Request handling failed, sending 500");
-                        sendErrorMessage(socket, 500 );
+                        sendErrorMessage(socket, 500);
                     }
 
                 }else{
                     log_msg(LOG_ERROR, "Invalid request fields, sending 500");
-                    sendErrorMessage(socket,500);
+                    sendErrorMessage(socket, 500);
                 }
 
             }else{
-                log_msg(LOG_ERROR, "Unsupported HTTP method (only GET supported)");
+                log_msg(LOG_ERROR, "Unsupported HTTP method");
+                sendErrorMessage(socket, 501);
             }
         }
 
