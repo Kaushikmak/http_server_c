@@ -11,6 +11,7 @@
 #include <netdb.h>
 #include <unistd.h>
 #include <sys/select.h>
+#include <errno.h>
 // custom logger
 #include "logger.h"
 
@@ -20,6 +21,7 @@
 #define MAX_ELEMENT_SIZE    10*(1<<10)
 #define MAX_SIZE            200*(1<<20)
 #define HASH_SIZE           1024
+#define MAX_CACHEABLE_SIZE  (5 * 1024 * 1024)
 
 typedef struct cache cache;
 
@@ -101,7 +103,7 @@ void move_to_head(cache *node) {
 cache *find(char *url){
     int temp_lock_val = pthread_mutex_lock(&lock);
     log_msg(LOG_DEBUG, "Cache lock acquired in find()");
-
+    //
     unsigned int hash_idx = hash_url(url);
     cache *site = hash_table[hash_idx];
 
@@ -148,7 +150,8 @@ int addCache(char *data, size_t size, char *url){
     cache *element = (cache*)malloc(sizeof(cache));
     
     element->data = (char*)malloc(size + 1);
-    strcpy(element->data, data);
+    memcpy(element->data, data, size);
+    element->data[size] = '\0';
 
     element->url = (char*)malloc(1 + (strlen(url) * sizeof(char)));
     strcpy(element->url, url);
@@ -313,12 +316,10 @@ int handle_request(int clientSocketID, struct ParsedRequest *request, char *temp
     char *buffer = (char *)malloc(sizeof(char)*MAX_BYTES);
     bzero(buffer, MAX_BYTES);
 
-    strcpy(buffer, method);
-    strcat(buffer, " ");
-    strcat(buffer, request->path ? request->path : "/");
-    strcat(buffer, " ");
-    strcat(buffer, request->version);
-    strcat(buffer, "\r\n");
+    snprintf(buffer, MAX_BYTES, "%s %s %s\r\n",
+         method,
+         request->path ? request->path : "/",
+         request->version);
 
     size_t len = strlen(buffer);
 
@@ -363,12 +364,30 @@ int handle_request(int clientSocketID, struct ParsedRequest *request, char *temp
 
     while (total_sent < req_len) {
         int sent = send(remoteSocketID, buffer + total_sent, req_len - total_sent, 0);
-        if (sent <= 0) {
-            log_msg(LOG_ERROR, "Failed to send full request to remote server");
+
+        if (sent < 0) {
+            if (errno == EINTR) {
+                log_msg(LOG_DEBUG, "send interrupted, retrying");
+                continue;
+            }
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                log_msg(LOG_DEBUG, "send would block, retrying");
+                continue;
+            }
+
+            log_msg(LOG_ERROR, "send() failed while forwarding request");
             free(buffer);
             close(remoteSocketID);
             return -1;
         }
+
+        if (sent == 0) {
+            log_msg(LOG_ERROR, "send() returned 0, connection closed unexpectedly");
+            free(buffer);
+            close(remoteSocketID);
+            return -1;
+        }
+
         total_sent += sent;
     }
 
@@ -417,7 +436,19 @@ int handle_request(int clientSocketID, struct ParsedRequest *request, char *temp
     int tempBufferIDX = 0;
 
     bzero(buffer, MAX_BYTES);
-    int bytes_read = recv(remoteSocketID, buffer, MAX_BYTES, 0);
+    int bytes_read;
+    while (1) {
+        bytes_read = recv(remoteSocketID, buffer, MAX_BYTES, 0);
+
+        if (bytes_read < 0) {
+            if (errno == EINTR) continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) continue;
+
+            log_msg(LOG_ERROR, "recv failed");
+            break;
+        }
+        break;
+    }
 
     while (bytes_read > 0) {
         int sent_total = 0;
@@ -432,7 +463,11 @@ int handle_request(int clientSocketID, struct ParsedRequest *request, char *temp
 
         if (tempBufferIDX + bytes_read >= tempBufSize) {
             tempBufSize += MAX_BYTES;
-            tempBuffer = (char*)realloc(tempBuffer, tempBufSize);
+            if (tempBufferIDX + bytes_read > MAX_CACHEABLE_SIZE) {
+                log_msg(LOG_INFO, "Response too large, skipping cache");
+                free(tempBuffer);
+                tempBuffer = NULL;
+            }
         }
 
         memcpy(tempBuffer + tempBufferIDX, buffer, bytes_read);
@@ -447,7 +482,13 @@ int handle_request(int clientSocketID, struct ParsedRequest *request, char *temp
     log_msg(LOG_INFO, "Response received and forwarded to client");
 
     if (strcmp(method, "GET") == 0) {
-        addCache(tempBuffer, tempBufferIDX, tempReq);
+        char cacheKey[2048];
+        snprintf(cacheKey, sizeof(cacheKey), "%s:%s:%s",
+                method,
+                request->host,
+                request->path);
+
+        addCache(tempBuffer, tempBufferIDX, cacheKey);
         log_msg(LOG_INFO, "Response cached");
     } else {
         log_msg(LOG_INFO, "Response not cached (method not GET)");
@@ -660,24 +701,37 @@ void *thread_fn(void *socketNew){
     }
     tempReq[strlen(buffer)] = '\0';
 
-    cache *temp = find(tempReq);
+    struct ParsedRequest *request = ParsedRequest_create();
+    // FIXME: request 
+    char cacheKey[2048];
+    snprintf(cacheKey, sizeof(cacheKey), "%s:%s:%s",
+            original_method,
+            request->host,
+            request->path);
+
+    cache *temp = find(cacheKey);
 
     // CACHE HIT
     if(temp != NULL){
 
         log_msg(LOG_INFO, "Serving response from cache");
 
-        int size = temp->len/sizeof(char);
-        int pos = 0;
-        char response[MAX_BYTES];
+        int total_sent = 0;
+        int size = temp->len;
 
-        while(pos<size){
-            bzero(response, MAX_BYTES);
-            for(int i=0; i<MAX_BYTES; i++){
-                response[i] = temp->data[i];
-                pos++;
+        while (total_sent < size) {
+            int chunk = (size - total_sent > MAX_BYTES) ? MAX_BYTES : (size - total_sent);
+
+            int sent_total = 0;
+            while (sent_total < chunk) {
+                int sent = send(socket, temp->data + total_sent + sent_total, chunk - sent_total, 0);
+                if (sent <= 0) {
+                    log_msg(LOG_ERROR, "Error sending cached response");
+                    break;
+                }
+                sent_total += sent;
             }
-            send(socket, response, MAX_BYTES, 0);
+            total_sent += sent_total;
         }
 
         log_msg(LOG_DEBUG, "Cache response sent to client");
@@ -760,6 +814,7 @@ void *thread_fn(void *socketNew){
 
     return NULL;
 }
+
 
 #ifndef BENCHMARKING
 int main(int argc,char *argv[]){
